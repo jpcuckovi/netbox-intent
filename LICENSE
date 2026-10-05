@@ -1,0 +1,36 @@
+PUBLIC DOCUMENTATION NOTICE
+
+Copyright (c) 2026 NightLabs. All rights reserved.
+
+1. SCOPE
+
+   This repository contains documentation only, published for viewing and
+   evaluation. The source code, configuration, templates, and seed data
+   for this project are not included. They remain the proprietary property
+   of NightLabs and are governed by a separate proprietary software
+   license.
+
+2. NO LICENSE GRANTED
+
+   Apart from viewing this repository and the rights GitHub's Terms of
+   Service grant to users of public repositories, no license, express or
+   implied, is granted. No person or entity may copy, reproduce, modify,
+   publish, distribute, or create derivative works from this
+   documentation, in whole or in part, without the prior written
+   permission of NightLabs.
+
+3. THIRD-PARTY COMPONENTS
+
+   This documentation refers to third-party software, including NetBox,
+   Nokia SR Linux, containerlab, clabernetes, PostgreSQL, Valkey, and a
+   fork of pygnmi distributed under the BSD 3-Clause License. Those
+   components remain subject to the terms of their respective licensors.
+
+4. NO WARRANTY
+
+   THIS DOCUMENTATION IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+   THE SYSTEM IT DESCRIBES WRITES CONFIGURATION TO NETWORK DEVICES AND IS
+   BUILT FOR A LABORATORY ENVIRONMENT. NOTHING IN THIS DOCUMENTATION
+   SHOULD BE APPLIED TO A PRODUCTION NETWORK WITHOUT INDEPENDENT REVIEW.
+
+For licensing inquiries, contact NightLabs at licensing@nightlabs.io.
