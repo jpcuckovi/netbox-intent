@@ -1,9 +1,11 @@
 # Architecture
 
 Why this lab is shaped the way it is. Each heading is an assertion; what follows
-is the reasoning. Anything not yet decided is listed under a closing "Not yet
-decided" heading rather than written up as though it were; at present there is
-none.
+is the reasoning. Anything not yet decided would be listed under a closing "Not
+yet decided" heading; at present there is nothing to list.
+
+Two other projects are named throughout. `ceos-diag-agent` is a sibling lab
+built on Arista cEOS, and `netdiag-core` is the library that lab builds on.
 
 ## The subject is the configuration pipeline, not the network
 
@@ -52,8 +54,9 @@ data source. Templates stored only in its database cannot find each other,
 verified 2026-10-02 (`TemplateNotFound`). So this repository is a git data
 source, and `scripts/netbox.sh seed` triggers its sync. The repository is
 private: NetBox authenticates with a fine-grained GitHub token limited to
-reading this repository's contents, kept in the macOS Keychain and passed in on
-each seed, never written to a file. A template edit reaches NetBox once pushed.
+reading this repository's contents, kept in the workstation's keychain and
+passed in on each seed, never written to a file. A template edit reaches NetBox
+once pushed.
 
 **Rejected:** making the repository public to drop the token, and serving the
 templates from a ConfigMap mounted into NetBox as a local data source. The
@@ -105,10 +108,12 @@ reproducible.
 
 ## The image is pulled from ghcr.io, not mirrored to the lab's registry
 
-The lab's private registry holds images that cannot be obtained again; cEOS is
+The lab's private registry holds images that have no other source; cEOS is
 there for that reason, and netshoot is deliberately not. SR Linux is in the
 second category, and a copy in that registry would be a second place the same
-image lives with nothing to say which is authoritative.
+image lives with nothing to say which is authoritative. The drift watcher's
+image is in the first: it is built from this repository and published nowhere
+else.
 
 Size was checked as a reason to mirror anyway and found insufficient: the amd64
 image is one layer of 0.75 GB compressed, pulled once per node and cached by
@@ -136,9 +141,11 @@ cleanly under clabernetes on the cluster node.
 
 ## NetBox runs in the cluster, on the same node as the lab
 
-NetBox is deployed to the same k3s node as the clabernetes topology. The
-render-and-push path then reaches each device's management Service by cluster
-DNS, and device APIs need not be published outside the cluster.
+NetBox is deployed to the same k3s node as the clabernetes topology. Anything
+running in the cluster, as the drift watcher does, then reaches NetBox and each
+device's management Service by cluster DNS. A push runs from the operator's
+workstation through port-forwards to those Services, so device APIs need not be
+published outside the cluster.
 
 NetBox has its own namespace, `netbox`, and its own lifecycle in
 `scripts/netbox.sh`. `lab.sh down` deletes the lab's namespace, and the lab is
@@ -220,10 +227,15 @@ and all other configuration is rendered from NetBox and pushed.
 
 `host1` deletes the default route containerlab gives it through the management
 network, which would otherwise make every address reachable and defeat every
-data-plane check, as the sibling cEOS lab found. Its address is recorded in
-the addressing plan in the seed files, but nothing applies that address or a
-route via `access1` to the host yet; that belongs to the data-plane check,
-which is not built.
+data-plane check, as the sibling cEOS lab found.
+
+Verification stops at the control plane: adjacencies and routes, derived from
+NetBox. A data-plane check, traffic sent from `host1` through the switches,
+was planned and set aside, since the subject here is the configuration
+pipeline and the control-plane checks are what its transaction depends on.
+`host1` stays in the topology for future use. Its address is recorded in the
+addressing plan in the seed files, and nothing applies that address or a route
+via `access1` to the host.
 
 ## Access is routed, and the interior runs single-area OSPF
 
@@ -286,6 +298,94 @@ repository is JSON end to end.
 gNMI listens on port 57400 with a self-signed certificate in containerlab. The
 lab skips certificate verification, and the clabernetes Service publishes
 57400.
+
+## Rollback is proven by injecting faults after rendering
+
+Unit tests show that the push sends a cancel to every committed switch. They
+cannot show that four real switches then return to what they ran before, so a
+proof runs against the lab (`python -m intentlab.prove_rollback`). It pushes
+two faulty changes and requires that, after each, every switch reports zero
+differences from NetBox and the network checks pass.
+
+The first fault is valid configuration that the network cannot converge with:
+one link between two switches is disabled. Every switch commits and reads
+back, the OSPF checks fail, and every switch is cancelled. The second is a
+value outside an enumeration, given to the switch that is pushed last, so the
+switches before it have already committed when it refuses; those are
+cancelled. Every switch also receives a harmless description in both, so all
+four take part in each transaction.
+
+The fault is added to the rendered configuration, between NetBox and the push.
+NetBox is never wrong, so a proof that is interrupted leaves nothing to
+restore in the source of truth, and the switches roll back by themselves. What
+is under test is the transaction, not NetBox.
+
+Both scenarios passed on 2026-10-06 against SR Linux 26.7.2.
+
+Three failure paths are not part of the proof. A read-back that differs from
+what was sent cannot be induced on a real switch, which either applies a Set
+or refuses it, so the unit test stands for it. An interrupted push goes
+through the same cancel as a rejected Set. A switch that cannot be reached to
+cancel relies on its rollback timer, which the proof of the fork's commit
+confirmed, described under the last heading, covers.
+
+**Rejected:** writing the fault into NetBox through its API and re-seeding
+afterwards. It exercises bad intent from the source of truth onward, but a
+proof that dies midway leaves NetBox describing a broken network until the
+seed is loaded again.
+
+## Drift is noticed by subscription and decided by the same diff
+
+A watcher holds a gNMI Subscribe stream to every switch and reports when a
+switch stops matching NetBox, when its differences change, and when it matches
+again. A notification is only a trigger. The verdict comes from the comparison
+the push and the dry run already use, a configuration-only read of the owned
+paths against NetBox's rendering, so there is still one definition of drift.
+
+The subscription is to a single leaf, SR Linux's record of when its
+configuration last changed, on change. Subscribing to the owned paths
+themselves was tried first and is refused on 26.7.2: a request may carry at
+most 36 paths and a switch owns 61. Subscribing to the few containers that
+hold them is accepted, but on change SR Linux also sends the counters beneath
+them, interface statistics, traffic rates and OSPF timers among them, so an
+idle switch produced two to four notifications a second and the stream never
+fell quiet. The leaf is silent until some configuration is committed. It moves
+for configuration the pipeline does not own as well, which costs one
+comparison that finds nothing.
+
+A switch is compared once its stream has been quiet for a few seconds, so the
+several commits of one push are one comparison. Every switch is also compared
+on a timer. That is what notices intent changed in NetBox and never pushed,
+which no switch can announce, and it covers a notification lost with a dropped
+stream. A switch that stops answering, and NetBox failing to render, are
+reported as states of their own and never as drift.
+
+The watcher reports and does nothing else. **Rejected:** having it push to
+restore what it finds. It would act in the middle of a deliberate push, and of
+the rollback proof, and restoring is a decision the push already serves.
+
+Drift is produced on demand by an injector that makes one change on a switch
+with a plain gNMI Set, no commit confirmed, as a change made by hand would be.
+It adds, alters or removes a description, one for each kind of difference the
+diff reports, so the network is unaffected. All three were injected, reported
+by a dry run and restored by a push on 2026-10-06, and the watcher reported a
+removed description within seconds and its restoration after the push.
+
+The watcher runs as a single pod in the lab's namespace, so it is removed with
+the lab and never watches switches that are gone. It reaches each switch by its
+Service name and NetBox by cluster DNS, the path a push would take from inside
+the cluster. Its NetBox token is provisioned when it is deployed and held in a
+Secret; the token dies with NetBox, so a rebuilt NetBox means deploying the
+watcher again, and until then it reports that NetBox cannot render. The same
+code runs in a terminal on the workstation through port-forwards, which is how
+it was developed and proven before it was packaged.
+
+Its image is built from this repository on a Python base pinned by digest,
+and tagged with a hash of the files it is built from, so the tag
+changes exactly when the image would. Deploying refuses a tag the registry does
+not hold, which otherwise shows up only as a pod that cannot start. Deployed on
+2026-10-06, it reported an injected change and its restoration as the terminal
+run had.
 
 ## The tooling is Python, with pynetbox and a fork of pygnmi
 
